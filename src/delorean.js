@@ -123,9 +123,23 @@
 
       this.listener = new DeLorean.EventEmitter();
       this.store = store;
+      this.store.data = {};
+      this.autoObserving = false;
       this.bindActions();
       if (typeof store.initialize === 'function') {
         store.initialize.apply(this.store, args);
+      }
+      // Allow getSate to be overwtitten
+      if (typeof this.store.getState === 'function') {
+        Store.prototype.getState = this.store.getState;
+      }
+      else if (typeof this.store.schema !== 'object') {
+        console.warn('Stores should have a schema object or getSate emthod defined, stores without either will have no state.')
+      }
+      else {
+        for (var schema in this.store.schema) {
+          this.setState(schema);
+        }
       }
     }
 
@@ -165,11 +179,89 @@
         return;
       }
 
+      this.autoObserving = true;
+
       observer = Array.isArray(object) ? Array.observe : Object.observe;
 
       observer(object, function (changes) {
         self.listener.emit('change', changes);
       });
+    };
+
+    Store.prototype.setState = function (property, data) {
+      var schema = this.store.schema, 
+          storeData = this.store.data,
+          schemaProp;
+
+      // Check for schema defined for the property beinf set
+      if ((schema != null ? schema[property] : null) != null) {
+        schemaProp = schema[property]
+
+        // Set property on data if it doesn't exist, default to an empty object if no defult is defined
+        if (storeData[property] == null) {
+          storeData[property] = schemaProp.default || {};
+        }
+
+        // Set provided data directly for any data types besides objects
+        if (!storeData[property] instanceof Object && data != null) {
+          storeData[property] = data;
+        }
+        else {
+          // Set properties individually for objects, so as not to remove properies not provided in data param
+          for (var dataKey in data) {
+            storeData[property][dataKey] = data[dataKey];
+          }
+          // Assign defaults for properties not yet defined in store data
+          for (var schemaKey in schemaProp) {
+            if (schemaKey === 'default') {
+              continue;
+            }
+            if (storeData[property][schemaKey] == null && schemaProp[schemaKey].default != null) {
+              storeData[schemaKey] = schemaProp[schemaKey].default;
+            }
+          }
+        }
+      }
+      // Set ptoperty directly on store data for properties with no schema
+      else {
+        storeData[property] = data;
+      }
+      // ire a chnage event if object.observe has not been invoked
+      if (!this.autoObserving) {
+        this.emit('change');
+      }
+    };
+    
+    Store.prototype.getState = function () {
+      var state = {},
+          storeData = this.store.data,
+          schema = this.store.schema,
+          schemaProp;
+
+      for (var dataKey in storeData) {
+        state[dataKey] = storeData[dataKey];
+
+        // Apply calculated properties 
+        if ((schema != null ? schema[dataKey] : null) != null) {
+          schemaProp = schema[dataKey];
+          if (typeof schemaProp.calculated === 'function') {
+            state[dataKey] = schemaProp.calculated();
+          }
+          if (!state[dataKey] instanceof Object) {
+            continue;
+          }
+          for (var schemaKey in schemaProp) {
+            if (schemaKey === 'default' || schemaKey === 'calculated') {
+              continue;
+            }
+            if (typeof schemaProp[schemaKey].calculated === 'function') {
+              state[dataKey][schemaKey] = schemaProp[schemaKey].calculated();
+            }
+          }
+        }
+      }
+
+      return state;
     };
 
     return Store;
@@ -274,8 +366,7 @@
         for (var storeName in this.stores) {
           if (__hasOwn(this.stores, storeName)) {
             if (this.stores[storeName]
-            && this.stores[storeName].store
-            && this.stores[storeName].store.getState) {
+            && this.stores[storeName].store) {
               state.stores[storeName] = this.stores[storeName].store.getState();
             }
           }
